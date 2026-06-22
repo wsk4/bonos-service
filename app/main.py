@@ -11,8 +11,10 @@ Comparte la base de datos y el JWT con casino-backend. Permite:
 Prefijo de rutas: /api/bonos  (para que nginx pueda enrutar por prefijo).
 """
 import os
+import time
 from contextlib import asynccontextmanager
 
+import psutil
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -58,6 +60,61 @@ class ReclamarRequest(BaseModel):
 #   - readiness: ¿está listo para recibir tráfico? Debe verificar la BD.
 # Luego configurar livenessProbe/readinessProbe en el Deployment de EKS.
 
+_INICIO = time.time()
+_READY_MAX_MEM_PERCENT = float(os.getenv("READY_MAX_MEM_PERCENT", "90"))
+
+
+@app.get("/livez", tags=["health"])
+def liveness():
+    """
+    Liveness probe — el proceso está vivo.
+    No depende de la BD: si falla, Kubernetes reinicia el pod.
+    """
+    return {
+        "status": "ok",
+        "uptime_segundos": round(time.time() - _INICIO, 1),
+    }
+
+
+@app.get("/readyz", tags=["health"])
+def readiness():
+    """
+    Readiness probe — verifica BD + memoria del pod.
+    200 si está lista, 503 si no: Kubernetes saca el pod del balanceo sin reiniciarlo.
+    """
+    cpu = psutil.cpu_percent(interval=0.1)
+    memoria = psutil.virtual_memory().percent
+
+    # 1) Verificar PostgreSQL (requisito principal del enunciado)
+    try:
+        with conexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "ready": False,
+                "motivo": f"BD no disponible: {exc}",
+                "cpu_%": cpu,
+                "memoria_%": memoria,
+            },
+        )
+
+    # 2) Verificar recursos del pod
+    if memoria > _READY_MAX_MEM_PERCENT:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "ready": False,
+                "motivo": "memoria alta",
+                "cpu_%": cpu,
+                "memoria_%": memoria,
+                "umbral_%": _READY_MAX_MEM_PERCENT,
+            },
+        )
+
+    return {"ready": True, "cpu_%": cpu, "memoria_%": memoria}
 
 @app.get("/api/bonos")
 def listar_bonos():
