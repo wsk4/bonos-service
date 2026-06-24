@@ -104,6 +104,8 @@ jobs:
           # Aplicar manifiestos
           kubectl apply -f k8s/bonos-deployment.yaml
           kubectl apply -f k8s/bonos-service.yaml
+          kubectl apply -f k8s/bonos-hpa.yaml
+
 
           # Esperar rollout completo
           kubectl rollout status deployment/bonos-service --timeout=120s
